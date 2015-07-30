@@ -83,7 +83,10 @@ namespace MediaPickerSample
 					return;
 				}
 
-				Intent intent = picker.GetPickPhotoUI();
+				Intent intent = picker.GetPickPhotoUI(new StoreCameraMediaOptions {
+					Name = "selected.jpg",
+					Directory = "MediaPickerSample"
+				});
 				StartActivityForResult (intent, 2);
 			};
 		}

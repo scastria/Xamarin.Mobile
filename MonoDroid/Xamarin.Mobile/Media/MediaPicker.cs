@@ -55,12 +55,15 @@ namespace Xamarin.Media
 			get { return true; }
 		}
 
-		public Intent GetPickPhotoUI()
+		public Intent GetPickPhotoUI(StoreCameraMediaOptions options = null)
 		{
+			if(options != null)
+				VerifyOptions (options);
+
 			int id = GetRequestId();
-			return CreateMediaIntent (id, "image/*", Intent.ActionPick, null, tasked: false);
+			return CreateMediaIntent (id, "image/*", Intent.ActionPick, options, tasked: false);
 		}
-		
+
 		public Intent GetTakePhotoUI (StoreCameraMediaOptions options)
 		{
 			if (!IsCameraAvailable)

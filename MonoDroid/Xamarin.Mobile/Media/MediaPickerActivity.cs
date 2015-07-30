@@ -101,7 +101,8 @@ namespace Xamarin.Media
 				pickIntent = new Intent (this.action);
 				if (this.action == Intent.ActionPick)
 					pickIntent.SetType (type);
-				else
+				//Allow ActionPick to still use specified title
+				if((this.action != Intent.ActionPick) || (this.title != null))
 				{
 					if (!this.isPhoto)
 					{
@@ -135,7 +136,7 @@ namespace Xamarin.Media
 					pickIntent.Dispose();
 			}
 		}
-		
+
 		private void Touch()
 		{
 			if (this.path.Scheme != "file")
@@ -156,12 +157,15 @@ namespace Xamarin.Media
 				// Not all camera apps respect EXTRA_OUTPUT, some will instead
 				// return a content or file uri from data.
 				if (data != null && data.Path != originalPath) {
-					originalPath = data.ToString();
+					originalPath = data.ToString ();
 					string currentPath = path.Path;
 					pathFuture = TryMoveFileAsync (context, data, path, isPhoto).ContinueWith (t =>
 						new Tuple<string, bool> (t.Result ? currentPath : null, false));
 				} else
 					pathFuture = TaskFromResult (new Tuple<string, bool> (path.Path, false));
+			} else if(path != null) {
+				//User must have specified an output file
+				pathFuture = TaskFromResult (new Tuple<string, bool> (path.Path, false));
 			} else if (data != null) {
 				originalPath = data.ToString();
 				path = data;
@@ -195,22 +199,42 @@ namespace Xamarin.Media
 
 				future.ContinueWith (t => OnMediaPicked (t.Result));
 			} else {
-				if (resultCode == Result.Canceled)
+				if (resultCode == Result.Canceled) {
 					SetResult (Result.Canceled);
-				else {
-					Intent resultData = new Intent();
-					resultData.PutExtra (MediaFile.ExtraName, (data != null) ? data.Data : null);
-					resultData.PutExtra ("path", this.path);
-					resultData.PutExtra ("isPhoto", this.isPhoto);
-					resultData.PutExtra ("action", this.action);
+					Finish();
+				} else {
+					//If we are a pick action AND we also have a path, then user must have specified one so read the picked item and
+					//copy to requested path now to prevent Security exception later
+					if ((this.action == Intent.ActionPick) && (this.path != null) && (data != null)) {
+						Task<bool> copyT = TryCopyFileAsync (this, data.Data, this.path, this.isPhoto);
+						copyT.ContinueWith (t => {
+							if(t.Result) {
+								Intent resultData = new Intent ();
+								resultData.PutExtra ("path", this.path);
+								resultData.PutExtra ("isPhoto", this.isPhoto);
+								resultData.PutExtra ("action", this.action);
 
-					SetResult (Result.Ok, resultData);
+								SetResult (Result.Ok, resultData);
+								Finish();
+							} else {
+								SetResult(Result.Canceled);
+								Finish();
+							}
+						});
+					} else {
+						Intent resultData = new Intent ();
+						resultData.PutExtra (MediaFile.ExtraName, (data != null) ? data.Data : null);
+						resultData.PutExtra ("path", this.path);
+						resultData.PutExtra ("isPhoto", this.isPhoto);
+						resultData.PutExtra ("action", this.action);
+
+						SetResult (Result.Ok, resultData);
+						Finish();
+					}
 				}
-
-				Finish();
 			}
 		}
-		
+
 		private static Task<bool> TryMoveFileAsync (Context context, Uri url, Uri path, bool isPhoto)
 		{
 			string moveTo = GetLocalPath (path);
@@ -228,16 +252,33 @@ namespace Xamarin.Media
 			}, TaskScheduler.Default);
 		}
 
+		private static Task<bool> TryCopyFileAsync (Context context, Uri url, Uri path, bool isPhoto)
+		{
+			string copyTo = GetLocalPath (path);
+			return GetFileForUriAsync (context, url, isPhoto).ContinueWith (t => {
+				if (t.Result.Item1 == null)
+					return false;
+
+				File.Delete (copyTo);
+				if(t.Result.Item2)
+					File.Move (t.Result.Item1, copyTo);
+				else
+					File.Copy (t.Result.Item1, copyTo);
+
+				return true;
+			}, TaskScheduler.Default);
+		}
+
 		private static int GetVideoQuality (VideoQuality videoQuality)
 		{
 			switch (videoQuality)
 			{
-				case VideoQuality.Medium:
-				case VideoQuality.High:
-					return 1;
+			case VideoQuality.Medium:
+			case VideoQuality.High:
+				return 1;
 
-				default:
-					return 0;
+			default:
+				return 0;
 			}
 		}
 
@@ -296,57 +337,57 @@ namespace Xamarin.Media
 			else if (uri.Scheme == "content")
 			{
 				Task.Factory.StartNew (() =>
-				{
-					ICursor cursor = null;
-					try
 					{
-						cursor = context.ContentResolver.Query (uri, null, null, null, null);
-						if (cursor == null || !cursor.MoveToNext())
-							tcs.SetResult (new Tuple<string, bool> (null, false));
-						else
+						ICursor cursor = null;
+						try
 						{
-							int column = cursor.GetColumnIndex (MediaStore.MediaColumns.Data);
-							string contentPath = null;
-
-							if (column != -1)
-								contentPath = cursor.GetString (column);
-
-							bool copied = false;
-
-							// If they don't follow the "rules", try to copy the file locally
-							if (contentPath == null || !contentPath.StartsWith ("file"))
+							cursor = context.ContentResolver.Query (uri, null, null, null, null);
+							if (cursor == null || !cursor.MoveToNext())
+								tcs.SetResult (new Tuple<string, bool> (null, false));
+							else
 							{
-								copied = true;
-								Uri outputPath = GetOutputMediaFile (context, "temp", null, isPhoto);
+								int column = cursor.GetColumnIndex (MediaStore.MediaColumns.Data);
+								string contentPath = null;
 
-								try
-								{
-									using (Stream input = context.ContentResolver.OpenInputStream (uri))
-									using (Stream output = File.Create (outputPath.Path))
-										input.CopyTo (output);
+								if (column != -1)
+									contentPath = cursor.GetString (column);
 
-									contentPath = outputPath.Path;
-								}
-								catch (Java.IO.FileNotFoundException)
+								bool copied = false;
+
+								// If they don't follow the "rules", try to copy the file locally
+								if (contentPath == null || !contentPath.StartsWith ("file"))
 								{
-									// If there's no data associated with the uri, we don't know
-									// how to open this. contentPath will be null which will trigger
-									// MediaFileNotFoundException.
+									copied = true;
+									Uri outputPath = GetOutputMediaFile (context, "temp", null, isPhoto);
+
+									try
+									{
+										using (Stream input = context.ContentResolver.OpenInputStream (uri))
+										using (Stream output = File.Create (outputPath.Path))
+											input.CopyTo (output);
+
+										contentPath = outputPath.Path;
+									}
+									catch (Java.IO.FileNotFoundException)
+									{
+										// If there's no data associated with the uri, we don't know
+										// how to open this. contentPath will be null which will trigger
+										// MediaFileNotFoundException.
+									}
 								}
+
+								tcs.SetResult (new Tuple<string, bool> (contentPath, copied));
 							}
-
-							tcs.SetResult (new Tuple<string, bool> (contentPath, copied));
 						}
-					}
-					finally
-					{
-						if (cursor != null)
+						finally
 						{
-							cursor.Close();
-							cursor.Dispose();
+							if (cursor != null)
+							{
+								cursor.Close();
+								cursor.Dispose();
+							}
 						}
-					}
-				}, CancellationToken.None, TaskCreationOptions.None, TaskScheduler.Default);
+					}, CancellationToken.None, TaskCreationOptions.None, TaskScheduler.Default);
 			}
 			else
 				tcs.SetResult (new Tuple<string, bool> (null, false));
